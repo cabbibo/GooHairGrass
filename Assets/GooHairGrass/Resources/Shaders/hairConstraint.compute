@@ -1,0 +1,95 @@
+﻿#pragma kernel CSMain
+ 
+int _VertsPerHair;
+float _SpringDistance;
+int _PassID;
+
+struct Vert{
+
+  float3 pos;
+  float3 oPos;
+  float3 vel;
+  float3 nor;
+  float2 uv;
+  float3 debug;
+
+  float3 triIDs;
+  float3 triWeights;
+
+};
+
+RWStructuredBuffer<Vert> vertBuffer;
+#define NR_THREADS 256
+
+[numthreads(NR_THREADS,1,1)]
+void CSMain (uint threadID : SV_GroupIndex, uint3 u3GroupID : SV_GroupID, uint3 id : SV_DispatchThreadID) {
+  
+	// Get the id using thread / group indices
+  int pID = threadID + u3GroupID * NR_THREADS;
+
+  // Since we are doing 2 passes for verlet, multiply by 2 
+  // to get both the vertices!
+	pID = pID * 2;
+  pID = pID + _PassID;
+
+ 	Vert v1 = vertBuffer[pID];
+
+
+ 	// If we are are the end of the hair, no need to do verlet
+ 	if( v1.uv.y >= _VertsPerHair-1 ){
+ 	
+ 		vertBuffer[ pID ] = v1;
+ 	
+ 	}else{
+
+ 		// If we aren't at the end of the hair,
+ 		// constraint these puppies!
+ 		Vert v2 = vertBuffer[ pID + 1 ];
+
+ 		float3 dif = v1.pos - v2.pos;
+ 		float l = length( dif );
+
+ 		// Not using noise, but for more lifelike hair
+ 		// you could ad some noise to the lengths!
+
+ 		//float n = noise( v1.pos * 20 );
+
+		float difference = 0;
+ 		
+ 		// We want to make sure that l isn't zero, 
+ 		// or we will get some NaNs
+ 		if( l > 0 ){
+			difference = ( _SpringDistance  - l ) / l;
+		}
+
+		// Here is where the actual verlet goes down!
+		float3 translate = dif * .6 * difference;
+		
+		float3 t1 = 1 * translate;
+		float3 t2 = 1 * translate;
+		
+		float3 n1 = v1.pos + t1;
+		float3 n2 = v2.pos - t2;
+
+		if( v1.uv.y != 0){
+			
+			v1.pos = n1;
+			v2.pos = n2;
+			
+		}else{
+
+			v1.pos = v1.pos;
+			
+			// If its at the base, move it without moving bottom
+			// Because it is attached somewhere
+			v2.pos = n2-t2;
+		
+		}
+
+		// Set both the values in the proper buffer location!
+		vertBuffer[ pID ] = v1;
+		vertBuffer[ pID + 1 ] = v2;
+
+ 	}
+
+}

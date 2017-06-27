@@ -1,0 +1,33 @@
+﻿#pragma kernel CSMain
+  
+struct Vert{
+	 float used;
+     float3 pos;
+     float3 vel;
+     float3 nor;
+     float2 uv;
+     float3 targetPos;
+     float3 debug;
+};
+
+float4x4 transform;
+
+RWStructuredBuffer<Vert> vertBuffer;
+
+
+#define NR_THREADS 256
+[numthreads(NR_THREADS,1,1)]
+void CSMain (uint threadID : SV_GroupIndex, uint3 u3GroupID : SV_GroupID, uint3 id : SV_DispatchThreadID) {
+  
+  int pID = threadID + u3GroupID * NR_THREADS;
+
+  Vert vert = vertBuffer[pID];
+
+  if( vert.used == 1 ){
+  	vert.pos = mul( transform , float4( vert.targetPos , 1)).xyz;
+  }
+
+
+  vertBuffer[pID] = vert;
+
+}

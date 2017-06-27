@@ -1,0 +1,309 @@
+﻿#pragma kernel CSMain
+
+
+float _DeltaTime;
+float _Time;
+int _Reset;
+float _SpringDistance;
+int _VertsPerHair;
+int _HumanLength;
+
+
+#include "Chunks/noise.cginc"
+
+struct Base{
+	float used;
+  float3 pos;
+  float3 vel;
+  float3 nor;
+  float2 uv;
+  float3 targetPos;
+  float3 debug;
+};
+
+  struct Hair{
+
+    float3 pos;
+    float3 oPos;
+    float3 vel;
+    float3 nor;
+    float2 uv;
+    float3 debug;
+
+    float3 triIDs;
+    float3 triWeights;
+
+  };
+
+#include "Chunks/humanStruct.cginc"
+
+float4x4 transform;
+
+RWStructuredBuffer<Hair> hairBuffer;
+RWStructuredBuffer<Base> baseBuffer;
+
+RWStructuredBuffer<Human> humanBuffer;
+
+RWStructuredBuffer<float4> outBuffer;
+
+float3 getVel( float3 p1 , float3 p2 ){
+
+	float3 v = p1 - p2;
+
+	if( length( v ) > .5){ v = normalize( v ) *.5; }
+	return v;
+	
+}
+
+
+#define NR_THREADS 256
+#include "Chunks/interlockedAddFunctions.cginc"
+
+
+
+
+void interlockedClosestLength(float2 value , int threadid ){
+
+  accumVal[threadid].xy = value;
+
+  // accumulate a bit in parralel
+  GroupMemoryBarrierWithGroupSync();
+  if((threadid&0x3)==0){
+
+    float2 fVal = float2(1000000,1000000);
+
+    for( int i = 0; i < 4; i++){
+      float2 v = accumVal[threadid + i ].xy;
+      if( v.x < fVal.x ){
+        fVal = v;
+      }
+    }
+
+    accumVal[threadid+0].xy = fVal;
+
+  }
+  GroupMemoryBarrierWithGroupSync();
+  if(threadid==0){
+    float2 result = accumVal[0].xy;
+    for(int i=4; i<NR_THREADS; i+=0x4){ 
+      if( accumVal[i].x < result.x ){
+        result = accumVal[i].xy;
+      } 
+
+    }
+    interlockedFullValue.xy = result;
+  } 
+  GroupMemoryBarrierWithGroupSync();
+  
+}
+
+[numthreads(NR_THREADS,1,1)]
+void CSMain (uint threadID : SV_GroupIndex, uint3 u3GroupID : SV_GroupID, uint3 id : SV_DispatchThreadID) {
+  
+  resetValue( threadID );
+  //int pID = id.x + id.y * gridX + id.z * gridX * gridY;
+
+  int pID = threadID + u3GroupID * NR_THREADS;
+
+  Hair vert = hairBuffer[ pID ];
+
+
+  // Placing the vert in the proper place on the triangle!
+
+  Base b1 = baseBuffer[(int)vert.triIDs.x];
+  Base b2 = baseBuffer[(int)vert.triIDs.y];
+  Base b3 = baseBuffer[(int)vert.triIDs.z];
+
+
+  float3 basePos = b1.pos * vert.triWeights.x + b2.pos * vert.triWeights.y + b3.pos * vert.triWeights.z;
+  float3 baseNor = b1.nor * vert.triWeights.x + b2.nor * vert.triWeights.y + b3.nor * vert.triWeights.z;
+
+  baseNor = normalize(mul( transform , float4( baseNor , 0 )).xyz);
+
+  float3 dif = baseNor * _SpringDistance * _VertsPerHair;
+
+  if( _Reset == 1 ){
+
+    // just place back at the beginning if resetting!
+    vert.oPos = basePos +  dif * vert.uv.y;// vert.ogPos;
+    vert.pos  = basePos +  dif * vert.uv.y;//vert.ogPos;
+
+
+  }else{
+
+
+	
+
+  	float3 force = float3( 0 , 0 , 0 );
+
+
+    float bendiness = 0;
+
+    /*
+      Except for the very base vert,
+      we are going to add a slight force outwards
+      using the normal!
+    */
+    if( vert.uv.y >0){
+
+      force +=  baseNor * .8;
+
+      if( vert.uv.y < _VertsPerHair-1 ){
+
+        float3 vUp = hairBuffer[ pID + 1 ].pos;
+        float3 vDo = hairBuffer[ pID - 1 ].pos;
+
+        // here we store a value for how 'bendy' the hair is
+        // aka how close to parallel up and down verts are!
+        float d = abs(dot( normalize( vUp-vert.pos ) , normalize(vDo-vert.pos)));
+        bendiness += (1-d) * (1-d);
+
+
+      }
+
+    }
+
+
+
+    /*
+
+      This is where we do collisions with the humans!
+      It gets a bit more complex because we cant to get new collisions
+      for the data out buffer
+
+
+    */
+
+
+    float totalCollisions = 0;
+    float newCollisions = 0;
+
+    float currentlyCollided = vert.debug.y;
+    float dontClear = 0;
+    float bothOutside = 0;
+
+    float2 closestVert = float2( 100000000, 1);
+
+    for( int i = 0; i < _HumanLength; i++ ){
+
+      Human h = humanBuffer[i];
+      float3 dif; float l;
+      
+      // Adding an arbitrary if statement. hopefully
+      // this doesn't get anyone in trouble :/
+      if( h.hand1.debug.z == 0 ){
+
+        dif = h.hand1.pos - vert.pos;
+        l = length( dif );
+
+        if( l < closestVert.x ){
+          closestVert = float2( l , vert.uv.x );
+        }
+
+        if( l < .1 && l > 0 ){
+          totalCollisions ++;
+          force += normalize( dif ) * ( -.2 + h.hand1.trigger ) / ( .3 * length( dif ) * 4);
+        }
+
+        if( l < .1 ){
+
+          if( vert.debug.y == 0 ){
+            newCollisions += 1;
+            vert.debug.y = 1;
+            dontClear = 1;
+          }
+
+        }else{
+          bothOutside += 1;
+        }
+
+      }else{
+        bothOutside += 1;
+      }
+
+      if(h.hand2.debug.z == 0 ){
+
+
+        dif = h.hand2.pos - vert.pos;
+        l = length( dif );
+
+        if( l < closestVert.x ){
+          closestVert = float2( l , vert.uv.x );
+        }
+
+        if( l < .1 && l > 0 ){
+          totalCollisions ++;
+          force += normalize( dif ) * ( -.2 + h.hand2.trigger ) / ( .3 * length( dif ) * 4);
+        }
+
+        if( l < .1 ){
+
+          if( vert.debug.y == 0 ){
+            newCollisions += 1;
+            vert.debug.y = 1;
+            dontClear = 1;
+          }
+
+        }else{
+          bothOutside += 1;
+        }
+
+      }else{
+        bothOutside += 1;
+      }
+
+    }
+
+    if( bothOutside == _HumanLength * 2 ){ vert.debug.y = 0; }
+    
+
+
+  
+    // Inertia: objects in motion stay in motion.
+  	float3 vel = getVel( vert.pos , vert.oPos);
+
+  	float3 acceleration = force;
+
+    float dampening = .99;//.99999;// - vert.life * .01;
+  	float3 next = vert.pos + vel * dampening + acceleration * _DeltaTime * _DeltaTime;
+
+  	vert.oPos = vert.pos;
+  	vert.pos = next;
+
+
+  	//vert.vel = vel;
+
+    // If we are at the bottom, 
+  	if( vert.uv.y == 0 ){ 
+      vert.pos = basePos; 
+  		vert.oPos = basePos;
+  	}
+
+    /*interlockedClosestLength( closestVert , threadID );
+
+    float2 closestID;
+    if( threadID == 0 ){
+      closestID = interlockedFullValue.xy;
+    }
+
+    resetValue( threadID );*/
+
+
+    //todo : save out more
+    interlockedAddFloat4( float4(totalCollisions,bendiness,newCollisions,0) , threadID );
+    
+
+    if( threadID == 0 ){
+      //interlockedFullValue.zw = closestID;
+      outBuffer[ u3GroupID.x ] = interlockedFullValue;
+    }
+
+
+  	
+
+  }
+
+
+	hairBuffer[pID] = vert;
+	
+}

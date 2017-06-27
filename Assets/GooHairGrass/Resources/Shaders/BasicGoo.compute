@@ -1,0 +1,182 @@
+#pragma kernel CSMain
+  
+struct Vert{
+   float used;
+   float3 pos;
+   float3 vel;
+   float3 nor;
+   float2 uv;
+   float3 targetPos;
+   float3 debug;
+};
+
+#include "Chunks/noise.cginc"
+
+float4x4 transform;
+
+float _DeltaTime;
+float _Time;
+
+int _Reset;
+
+int _HumanLength;
+
+float3 _CenterPos;
+
+float totalTouching;
+
+#include "Chunks/humanStruct.cginc"
+
+RWStructuredBuffer<Vert> vertBuffer;
+RWStructuredBuffer<float4> audioBuffer;
+RWStructuredBuffer<Human> humanBuffer;
+
+RWStructuredBuffer<float4> outBuffer;
+
+
+#include "Chunks/springForce.cginc"
+
+#define NR_THREADS 256
+
+#include "Chunks/interlockedAddFunctions.cginc"
+
+
+[numthreads(NR_THREADS,1,1)]
+void CSMain (uint threadID : SV_GroupIndex, uint3 u3GroupID : SV_GroupID, uint3 id : SV_DispatchThreadID) {
+  
+ 
+
+  resetValue(threadID);
+
+  int pID = threadID + u3GroupID * NR_THREADS;
+  Vert vert = vertBuffer[pID];
+  
+  float4 acc = float4(0,0,0,0);
+
+
+  if( vert.used == 1 ){
+
+
+
+
+    float3 force = float3( 0,0,0);
+
+    float3 fTargetPos =mul( transform , float4( vert.targetPos , 1)).xyz;
+    float3 baseTargetPos = fTargetPos;
+
+    fTargetPos += vert.nor * min( .4 , ( sin(_Time * .3) * .5 + 1.5 ) * .5 * length( vert.pos - fTargetPos ));
+    force += springForce( vert.pos , fTargetPos , 0.0) * 20.1;
+
+    //vert.debug = vert.pos - fTargetPos;
+
+    float currentlyCollided = vert.debug.y;
+    float dontClear = 0;
+    float bothOutside = 0;
+    for( int i = 0; i < _HumanLength; i++ ){
+      
+      Human h = humanBuffer[i];
+
+      float3 dif;
+      float l;
+
+
+      dif = h.hand1.pos - vert.pos; 
+      l = length( dif);
+
+      if( l < .6 ){
+       
+        force -= .3 * normalize( dif )*(.6-l) * ( .3 - h.hand1.trigger );
+      }
+
+      if( l < .2 ){ 
+        
+        acc.x ++;
+    
+        if( vert.debug.y == 0 ){
+          acc.y += 1;
+          vert.debug.y = 1;
+          dontClear = 1;
+        }
+     
+          
+      }else{
+        bothOutside += 1;
+      }
+
+      dif = h.hand2.pos - vert.pos; 
+      l = length( dif);
+
+      if( l < .6 ){
+        
+        force -= .3 * normalize( dif )*(.6-l)*( .3 - h.hand2.trigger );
+      }
+
+      if( l < .2 ){ 
+        
+        acc.x ++;
+    
+        if( vert.debug.y == 0 ){
+          acc.y += 1;
+          vert.debug.y = 1;
+          dontClear = 1;
+        }
+     
+          
+      }else{
+        bothOutside += 1;
+      }
+
+
+
+
+
+
+      dif = h.head.pos - vert.pos; 
+      l = length( dif);
+
+      if( l < .6 ){
+        force += normalize( dif )*(.6-l);
+      }
+
+
+
+    }
+
+
+   // if( dontClear == 0 ){ vert.debug.y = 0; }
+    if( bothOutside == _HumanLength * 2 ){ vert.debug.y = 0; }
+   
+
+    vert.vel += force * _DeltaTime ;   
+    if( length( vert.vel) > 1 ){ vert.vel = normalize( vert.vel ) * 1;}
+    vert.pos += vert.vel;
+
+    vert.vel *= .95;
+
+    if(_Reset == 1 ){
+      vert.vel = 0;
+      vert.debug = float3( 0, 0,0);
+      vert.pos = fTargetPos;
+    }
+
+  }
+
+  //acc.w = 0;
+  //acc.y = 0;
+  //acc.z = 0;
+  //acc.x = 0;
+
+  vert.debug.z = acc.y;
+
+
+  vertBuffer[pID] = vert;
+
+
+  interlockedAddFloat4( acc , threadID );
+
+
+  if( threadID == 0 ){
+    outBuffer[ u3GroupID.x ] = interlockedFullValue;
+  }
+
+}
