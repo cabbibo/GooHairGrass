@@ -1,5 +1,7 @@
 # Goo Hair Grass
 
+![WeirdGif1](http://i.imgur.com/Vhyzuig.gifv)
+
 Hey all! 
 
 I've been working on some helpful lil scripts for you to make weird physical stuff using compute shaders in [Unity] ! With it you can turn models into goo, grow hair on the models, or grow grass on the models even ( well by grass I mean weird rainbow tubes, but whatever! )
