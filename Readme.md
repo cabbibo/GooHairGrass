@@ -1,6 +1,6 @@
 # Goo Hair Grass
 
-![WeirdGif1](http://i.imgur.com/Vhyzuig.gifv)
+![WeirdGif1](https://media.giphy.com/media/3o7bueYS5NtpOdfBYc/giphy.gif)
 
 Hey all! 
 
